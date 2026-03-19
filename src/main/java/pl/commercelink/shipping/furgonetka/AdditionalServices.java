@@ -40,6 +40,8 @@ class AdditionalServices {
         @JsonProperty("swift")
         private String swift;
 
+        CashOnDelivery() {}
+
         CashOnDelivery(double amount, String iban, String name, String swift) {
             this.amount = amount;
             this.iban = iban;
