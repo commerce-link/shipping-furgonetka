@@ -1,6 +1,8 @@
 package pl.commercelink.shipping.furgonetka;
 
 import pl.commercelink.provider.api.AuthConfig;
+import pl.commercelink.provider.api.EventBinding;
+import pl.commercelink.provider.api.EventBinding.WebhookBinding;
 import pl.commercelink.provider.api.ProviderField;
 import pl.commercelink.rest.client.RestApiWithRetry;
 import pl.commercelink.shipping.api.ShippingProvider;
@@ -55,5 +57,10 @@ public class FurgonetkaShippingProviderDescriptor implements ShippingProviderDes
     public ShippingProvider create(Map<String, String> configuration, Map<String, Object> context) {
         RestApiWithRetry restApi = (RestApiWithRetry) context.get("restApi");
         return new Furgonetka(restApi);
+    }
+
+    @Override
+    public List<EventBinding<?>> bindings() {
+        return List.of(new WebhookBinding<>("furgonetka", String.class));
     }
 }
