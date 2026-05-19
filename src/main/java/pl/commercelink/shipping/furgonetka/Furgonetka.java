@@ -1,7 +1,5 @@
 package pl.commercelink.shipping.furgonetka;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import pl.commercelink.rest.client.HttpClientException;
 import pl.commercelink.rest.client.RestApiWithRetry;
 import pl.commercelink.shipping.api.*;
@@ -237,24 +235,6 @@ class Furgonetka implements ShippingProvider {
                     "/pickup-commands/" + uuid, orderPickupRequest, OrderPickupResponse.class);
         } catch (RuntimeException ex) {
             throw handleHttpException(ex);
-        }
-    }
-
-    @Override
-    public ShippingWebhookResult processWebhook(ShippingWebhookRequest request) {
-        try {
-            ObjectMapper mapper = new ObjectMapper();
-            FurgonetkaWebhookPayload payload = mapper.readValue(request.payload(), FurgonetkaWebhookPayload.class);
-
-            ShippingWebhookResult.ShipmentState state = switch (payload.getTracking().getState()) {
-                case "collected" -> ShippingWebhookResult.ShipmentState.COLLECTED;
-                case "delivered" -> ShippingWebhookResult.ShipmentState.DELIVERED;
-                default -> ShippingWebhookResult.ShipmentState.OTHER;
-            };
-
-            return new ShippingWebhookResult(payload.getPackageNo(), state, payload.getTracking().getDatetime());
-        } catch (JsonProcessingException e) {
-            throw new ShippingException("Failed to parse webhook payload", e);
         }
     }
 
