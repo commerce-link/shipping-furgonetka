@@ -7,12 +7,15 @@ import pl.commercelink.provider.api.WebhookExecutor;
 import pl.commercelink.shipping.api.ShippingException;
 import pl.commercelink.shipping.api.ShippingWebhookResult;
 
-class FurgonetkaWebhookExecutor implements WebhookExecutor<String, ShippingWebhookResult> {
+class FurgonetkaWebhookExecutor implements WebhookExecutor<ShippingWebhookResult> {
 
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     @Override
     public ShippingWebhookResult execute(String payload, WebhookContext ctx) {
+        if (payload == null || payload.isBlank()) {
+            return null;
+        }
         try {
             FurgonetkaWebhookPayload parsed = OBJECT_MAPPER.readValue(payload, FurgonetkaWebhookPayload.class);
             ShippingWebhookResult.ShipmentState state = switch (parsed.getTracking().getState()) {

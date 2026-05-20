@@ -61,6 +61,6 @@ public class FurgonetkaShippingProviderDescriptor implements ShippingProviderDes
 
     @Override
     public List<EventBinding<?>> bindings() {
-        return List.of(new WebhookBinding<>("furgonetka", String.class, new FurgonetkaWebhookExecutor()));
+        return List.of(new WebhookBinding<>("furgonetka", new FurgonetkaWebhookExecutor()));
     }
 }
