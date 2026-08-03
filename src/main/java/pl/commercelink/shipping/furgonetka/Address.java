@@ -21,6 +21,8 @@ class Address {
     private String email;
     @JsonProperty("phone")
     private String phone;
+    @JsonProperty("point")
+    private String point;
 
     void setName(String name) {
         this.name = name;
@@ -52,5 +54,9 @@ class Address {
 
     void setPhone(String phone) {
         this.phone = phone;
+    }
+
+    void setPoint(String point) {
+        this.point = point;
     }
 }
