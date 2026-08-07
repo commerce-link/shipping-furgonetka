@@ -79,7 +79,7 @@ class Furgonetka implements ShippingProvider {
         if (request.receiver() != null) {
             Address receiver = toAddress(request.receiver());
             if (request.hasDeliveryPoint()) {
-                receiver.setPoint(request.deliveryPoint().code());
+                receiver.setPoint(request.deliveryPointCode());
             }
             aPackage.setReceiver(receiver);
         }
