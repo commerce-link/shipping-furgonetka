@@ -77,7 +77,11 @@ class Furgonetka implements ShippingProvider {
             aPackage.setSender(toAddress(request.sender()));
         }
         if (request.receiver() != null) {
-            aPackage.setReceiver(toAddress(request.receiver()));
+            Address receiver = toAddress(request.receiver());
+            if (request.hasDeliveryPoint()) {
+                receiver.setPoint(request.deliveryPoint().code());
+            }
+            aPackage.setReceiver(receiver);
         }
         aPackage.setParcels(request.parcels().stream()
                 .map(p -> new ShippingParcel(p.width(), p.depth(), p.height(), p.weight(), p.insuranceValue(), p.description(), p.type()))
