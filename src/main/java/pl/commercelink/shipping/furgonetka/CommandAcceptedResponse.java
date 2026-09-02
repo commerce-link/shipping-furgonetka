@@ -4,16 +4,12 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
 @JsonIgnoreProperties(ignoreUnknown = true)
-class Error {
+class CommandAcceptedResponse {
 
-    @JsonProperty("message")
-    private String message;
+    @JsonProperty("uuid")
+    private String uuid;
 
-    String getMessage() {
-        return message;
-    }
-
-    void setMessage(String message) {
-        this.message = message;
+    String getUuid() {
+        return uuid;
     }
 }

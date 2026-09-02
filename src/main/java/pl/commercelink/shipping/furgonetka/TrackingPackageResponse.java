@@ -5,13 +5,14 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
 import java.time.OffsetDateTime;
+import java.util.ArrayList;
 import java.util.List;
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 class TrackingPackageResponse {
 
     @JsonProperty("tracking")
-    private List<TrackingEvent> tracking;
+    private List<TrackingEvent> tracking = new ArrayList<>();
 
     List<TrackingEvent> getTracking() {
         return tracking;
