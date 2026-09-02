@@ -3,6 +3,7 @@ package pl.commercelink.shipping.furgonetka;
 import org.junit.jupiter.api.Test;
 import pl.commercelink.provider.api.WebhookContext;
 import pl.commercelink.provider.api.WebhookOutcome;
+import pl.commercelink.provider.api.WebhookStatusResponse;
 import pl.commercelink.shipping.api.ShippingWebhookResult;
 
 import java.time.LocalDateTime;
@@ -54,13 +55,13 @@ class FurgonetkaWebhookExecutorTest {
     }
 
     @Test
-    void ignoresPayloadWhenChecksumDoesNotMatchConfiguredToken() {
+    void rejectsPayloadWhenChecksumDoesNotMatchConfiguredToken() {
         // when
         WebhookOutcome<ShippingWebhookResult> outcome = executor.execute(DELIVERED_PAYLOAD, context("other-token"));
 
         // then
         assertNull(outcome.result());
-        assertNotNull(outcome.responseBody());
+        assertEquals("REJECTED", ((WebhookStatusResponse) outcome.responseBody()).status());
     }
 
     @Test
@@ -85,7 +86,7 @@ class FurgonetkaWebhookExecutorTest {
     }
 
     @Test
-    void ignoresPayloadWithoutControlWhenTokenConfigured() {
+    void rejectsPayloadWithoutControlWhenTokenConfigured() {
         // given
         String payload = DELIVERED_PAYLOAD.replace(",\"control\":\"9984a99f622f4e1c26ebd035319c2454\"", "");
 
@@ -94,7 +95,20 @@ class FurgonetkaWebhookExecutorTest {
 
         // then
         assertNull(outcome.result());
-        assertNotNull(outcome.responseBody());
+        assertEquals("REJECTED", ((WebhookStatusResponse) outcome.responseBody()).status());
+    }
+
+    @Test
+    void ignoredButWellFormedPayloadsStillAnswerOk() {
+        // given
+        String payloadWithoutState = DELIVERED_PAYLOAD.replace("\"state\":\"delivered\",", "");
+
+        // when
+        WebhookOutcome<ShippingWebhookResult> outcome = executor.execute(payloadWithoutState, context(null));
+
+        // then
+        assertNull(outcome.result());
+        assertEquals("OK", ((WebhookStatusResponse) outcome.responseBody()).status());
     }
 
     @Test

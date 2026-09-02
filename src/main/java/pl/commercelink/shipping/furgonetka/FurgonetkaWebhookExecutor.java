@@ -26,6 +26,8 @@ class FurgonetkaWebhookExecutor implements WebhookExecutor<ShippingWebhookResult
     private static final Logger log = LoggerFactory.getLogger(FurgonetkaWebhookExecutor.class);
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
     private static final WebhookStatusResponse STATUS_OK = new WebhookStatusResponse("OK");
+    // Answered with HTTP 401 by the app (EventBindingRegistrar.REJECTED_STATUS) so Furgonetka's webhook test fails on a wrong token
+    private static final WebhookStatusResponse STATUS_REJECTED = new WebhookStatusResponse("REJECTED");
 
     @Override
     public WebhookOutcome<ShippingWebhookResult> execute(String payload, WebhookContext ctx) {
@@ -35,10 +37,10 @@ class FurgonetkaWebhookExecutor implements WebhookExecutor<ShippingWebhookResult
         try {
             FurgonetkaWebhookPayload parsed = OBJECT_MAPPER.readValue(payload, FurgonetkaWebhookPayload.class);
             if (!checksumValid(parsed, ctx)) {
-                log.warn("Furgonetka webhook ignored: checksum mismatch for package_no={} package_id={}"
+                log.warn("Furgonetka webhook rejected: checksum mismatch for package_no={} package_id={}"
                         + " (the webhook token in the store configuration must match the Furgonetka panel)",
                         parsed.getPackageNo(), parsed.getPackageId());
-                return WebhookOutcome.of(null, STATUS_OK);
+                return WebhookOutcome.of(null, STATUS_REJECTED);
             }
             if (parsed.getTracking() == null || parsed.getTracking().getState() == null) {
                 log.info("Furgonetka webhook ignored: no tracking state for package_no={}", parsed.getPackageNo());
