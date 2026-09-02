@@ -7,6 +7,7 @@ import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
+import java.util.Optional;
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 class FurgonetkaWebhookPayload {
@@ -78,11 +79,22 @@ class FurgonetkaWebhookPayload {
             return description;
         }
 
-        public LocalDateTime getDatetime() {
+        public String getDatetime() {
+            return datetime;
+        }
+
+        Optional<LocalDateTime> parsedDatetime() {
+            if (datetime == null || datetime.isBlank()) {
+                return Optional.empty();
+            }
             try {
-                return LocalDateTime.parse(datetime, LOCAL_FORMAT);
+                return Optional.of(LocalDateTime.parse(datetime, LOCAL_FORMAT));
             } catch (DateTimeParseException e) {
-                return OffsetDateTime.parse(datetime).toLocalDateTime();
+                try {
+                    return Optional.of(OffsetDateTime.parse(datetime).toLocalDateTime());
+                } catch (DateTimeParseException e2) {
+                    return Optional.empty();
+                }
             }
         }
     }

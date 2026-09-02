@@ -14,7 +14,6 @@ import pl.commercelink.shipping.api.ParcelTrackingSubscription;
 import pl.commercelink.shipping.api.ShippingException;
 
 import java.util.List;
-import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -122,6 +121,21 @@ class FurgonetkaParcelTrackingTest {
         assertEquals(ParcelTrackingSubscription.Status.FAILED, unresolved.status());
         assertEquals("Furgonetka could not determine the carrier", unresolved.error());
         assertNull(unresolved.externalId());
+    }
+
+    @Test
+    void partialSuccessWithPackageIdIsActive() {
+        // given
+        when(restApi.fetchWithAuthRetry(eq("/add-package-to-tracking-command/cmd-1"), anyMap(), eq(TrackingCommandStatusResponse.class)))
+                .thenReturn(status("partial_success", 5, "dpd"));
+
+        // when
+        ParcelTrackingSubscription result = furgonetka().checkParcelTracking("cmd-1");
+
+        // then
+        assertEquals(ParcelTrackingSubscription.Status.ACTIVE, result.status());
+        assertEquals("5", result.externalId());
+        assertEquals("dpd", result.carrier());
     }
 
     @Test

@@ -83,4 +83,45 @@ class FurgonetkaWebhookExecutorTest {
         // then
         assertEquals(LocalDateTime.of(2026, 9, 2, 13, 30, 0), outcome.result().datetime());
     }
+
+    @Test
+    void ignoresPayloadWithoutTracking() {
+        // given
+        String payload = "{\"package_id\":21037944,\"package_no\":\"CLTEST20260902A\",\"partner_order_id\":\"0\"}";
+
+        // when
+        WebhookOutcome<ShippingWebhookResult> outcome = executor.execute(payload, context(null));
+
+        // then
+        assertNull(outcome.result());
+        assertNotNull(outcome.responseBody());
+    }
+
+    @Test
+    void ignoresPayloadWithNullDatetime() {
+        // given
+        String payload = "{\"package_id\":21037944,\"package_no\":\"CLTEST20260902A\",\"partner_order_id\":\"0\","
+                + "\"tracking\":{\"datetime\":null,\"state\":\"delivered\",\"description\":\"x\",\"branch\":\"\"}}";
+
+        // when
+        WebhookOutcome<ShippingWebhookResult> outcome = executor.execute(payload, context(null));
+
+        // then
+        assertNull(outcome.result());
+        assertNotNull(outcome.responseBody());
+    }
+
+    @Test
+    void ignoresPayloadWithUnparseableDatetime() {
+        // given
+        String payload = "{\"package_id\":21037944,\"package_no\":\"CLTEST20260902A\",\"partner_order_id\":\"0\","
+                + "\"tracking\":{\"datetime\":\"garbage\",\"state\":\"delivered\",\"description\":\"x\",\"branch\":\"\"}}";
+
+        // when
+        WebhookOutcome<ShippingWebhookResult> outcome = executor.execute(payload, context(null));
+
+        // then
+        assertNull(outcome.result());
+        assertNotNull(outcome.responseBody());
+    }
 }

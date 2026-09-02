@@ -12,7 +12,9 @@ import pl.commercelink.shipping.api.ShippingWebhookResult;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.LocalDateTime;
 import java.util.HexFormat;
+import java.util.Optional;
 
 class FurgonetkaWebhookExecutor implements WebhookExecutor<ShippingWebhookResult> {
 
@@ -31,13 +33,20 @@ class FurgonetkaWebhookExecutor implements WebhookExecutor<ShippingWebhookResult
             if (!checksumValid(parsed, ctx)) {
                 return WebhookOutcome.of(null, STATUS_OK);
             }
+            if (parsed.getTracking() == null || parsed.getTracking().getState() == null) {
+                return WebhookOutcome.of(null, STATUS_OK);
+            }
+            Optional<LocalDateTime> datetime = parsed.getTracking().parsedDatetime();
+            if (datetime.isEmpty()) {
+                return WebhookOutcome.of(null, STATUS_OK);
+            }
             ShippingWebhookResult.ShipmentState state = switch (parsed.getTracking().getState()) {
                 case "collected" -> ShippingWebhookResult.ShipmentState.COLLECTED;
                 case "delivered" -> ShippingWebhookResult.ShipmentState.DELIVERED;
                 default -> ShippingWebhookResult.ShipmentState.OTHER;
             };
             ShippingWebhookResult result = new ShippingWebhookResult(
-                    parsed.getPackageNo(), state, parsed.getTracking().getDatetime());
+                    parsed.getPackageNo(), state, datetime.get());
             return WebhookOutcome.of(result, STATUS_OK);
         } catch (JsonProcessingException e) {
             throw new ShippingException("Failed to parse webhook payload", e);
