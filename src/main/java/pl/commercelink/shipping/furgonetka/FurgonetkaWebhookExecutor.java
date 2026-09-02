@@ -2,6 +2,8 @@ package pl.commercelink.shipping.furgonetka;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import pl.commercelink.provider.api.WebhookContext;
 import pl.commercelink.provider.api.WebhookExecutor;
 import pl.commercelink.provider.api.WebhookOutcome;
@@ -14,12 +16,14 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.LocalDateTime;
 import java.util.HexFormat;
+import java.util.Locale;
 import java.util.Optional;
 
 class FurgonetkaWebhookExecutor implements WebhookExecutor<ShippingWebhookResult> {
 
     static final String WEBHOOK_TOKEN_KEY = "webhookToken";
 
+    private static final Logger log = LoggerFactory.getLogger(FurgonetkaWebhookExecutor.class);
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
     private static final WebhookStatusResponse STATUS_OK = new WebhookStatusResponse("OK");
 
@@ -31,13 +35,19 @@ class FurgonetkaWebhookExecutor implements WebhookExecutor<ShippingWebhookResult
         try {
             FurgonetkaWebhookPayload parsed = OBJECT_MAPPER.readValue(payload, FurgonetkaWebhookPayload.class);
             if (!checksumValid(parsed, ctx)) {
+                log.warn("Furgonetka webhook ignored: checksum mismatch for package_no={} package_id={}"
+                        + " (the webhook token in the store configuration must match the Furgonetka panel)",
+                        parsed.getPackageNo(), parsed.getPackageId());
                 return WebhookOutcome.of(null, STATUS_OK);
             }
             if (parsed.getTracking() == null || parsed.getTracking().getState() == null) {
+                log.info("Furgonetka webhook ignored: no tracking state for package_no={}", parsed.getPackageNo());
                 return WebhookOutcome.of(null, STATUS_OK);
             }
             Optional<LocalDateTime> datetime = parsed.getTracking().parsedDatetime();
             if (datetime.isEmpty()) {
+                log.warn("Furgonetka webhook ignored: unparseable datetime '{}' for package_no={}",
+                        parsed.getTracking().getDatetime(), parsed.getPackageNo());
                 return WebhookOutcome.of(null, STATUS_OK);
             }
             ShippingWebhookResult.ShipmentState state = switch (parsed.getTracking().getState()) {
@@ -58,8 +68,12 @@ class FurgonetkaWebhookExecutor implements WebhookExecutor<ShippingWebhookResult
         if (token == null || token.isBlank()) {
             return true;
         }
-        String expected = md5Hex(parsed.checksumInput(token));
-        return parsed.getControl() != null && expected.equalsIgnoreCase(parsed.getControl());
+        if (parsed.getControl() == null) {
+            return false;
+        }
+        String expected = md5Hex(parsed.checksumInput(token.trim()));
+        String control = parsed.getControl().trim().toLowerCase(Locale.ROOT);
+        return MessageDigest.isEqual(expected.getBytes(StandardCharsets.UTF_8), control.getBytes(StandardCharsets.UTF_8));
     }
 
     static String md5Hex(String input) {

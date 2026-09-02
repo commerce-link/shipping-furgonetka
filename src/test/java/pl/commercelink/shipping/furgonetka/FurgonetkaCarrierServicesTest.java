@@ -28,10 +28,21 @@ class FurgonetkaCarrierServicesTest {
             "RUCH, orlen",
             "Meest, meest",
             "Ambro Express, ambroexpress",
-            "Xpress Delivery, xpress"
+            "Xpress Delivery, xpress",
+            "X-press Couriers, xpress",
+            "DHL Express, dhl",
+            "Paczkomaty InPost, inpost",
+            "Kurier DPD, dpd"
     })
     void mapsKnownCarrierNames(String carrier, String expected) {
         assertEquals(Optional.of(expected), FurgonetkaCarrierServices.serviceFor(carrier));
+    }
+
+    @Test
+    void expressCarriersAreNotMistakenForXpress() {
+        assertTrue(FurgonetkaCarrierServices.serviceFor("TNT Express").isEmpty());
+        assertTrue(FurgonetkaCarrierServices.serviceFor("Raben Express").isEmpty());
+        assertTrue(FurgonetkaCarrierServices.serviceFor("Kurier Express").isEmpty());
     }
 
     @Test

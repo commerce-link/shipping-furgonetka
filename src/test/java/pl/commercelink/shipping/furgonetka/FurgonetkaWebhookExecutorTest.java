@@ -64,6 +64,40 @@ class FurgonetkaWebhookExecutorTest {
     }
 
     @Test
+    void acceptsTokenPastedWithSurroundingWhitespace() {
+        // when
+        WebhookOutcome<ShippingWebhookResult> outcome = executor.execute(DELIVERED_PAYLOAD, context("  " + TOKEN + " "));
+
+        // then
+        assertNotNull(outcome.result());
+    }
+
+    @Test
+    void acceptsUppercaseControlChecksum() {
+        // given
+        String payload = DELIVERED_PAYLOAD.replace("9984a99f622f4e1c26ebd035319c2454", "9984A99F622F4E1C26EBD035319C2454");
+
+        // when
+        WebhookOutcome<ShippingWebhookResult> outcome = executor.execute(payload, context(TOKEN));
+
+        // then
+        assertNotNull(outcome.result());
+    }
+
+    @Test
+    void ignoresPayloadWithoutControlWhenTokenConfigured() {
+        // given
+        String payload = DELIVERED_PAYLOAD.replace(",\"control\":\"9984a99f622f4e1c26ebd035319c2454\"", "");
+
+        // when
+        WebhookOutcome<ShippingWebhookResult> outcome = executor.execute(payload, context(TOKEN));
+
+        // then
+        assertNull(outcome.result());
+        assertNotNull(outcome.responseBody());
+    }
+
+    @Test
     void skipsVerificationWhenNoTokenConfigured() {
         // when
         WebhookOutcome<ShippingWebhookResult> outcome = executor.execute(DELIVERED_PAYLOAD, context(null));

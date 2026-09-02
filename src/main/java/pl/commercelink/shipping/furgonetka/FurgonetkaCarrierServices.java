@@ -1,6 +1,8 @@
 package pl.commercelink.shipping.furgonetka;
 
+import java.util.Arrays;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
@@ -34,9 +36,20 @@ final class FurgonetkaCarrierServices {
             return Optional.empty();
         }
         String normalized = carrierName.toLowerCase(Locale.ROOT);
+        String compact = normalized.replaceAll("[^a-z0-9]", "");
+        List<String> words = Arrays.stream(normalized.split("[^a-z0-9]+"))
+                .filter(word -> !word.isEmpty())
+                .toList();
         return BY_KEYWORD.entrySet().stream()
-                .filter(entry -> normalized.contains(entry.getKey()))
+                .filter(entry -> matches(entry.getKey(), words, compact))
                 .map(Map.Entry::getValue)
                 .findFirst();
+    }
+
+    // A keyword has to start a word ("DPD Polska", "Paczkomaty InPost") or the whole compacted name
+    // ("X-press Couriers"). Plain substring matching would send every "... Express" carrier as xpress,
+    // and a wrong service disables Furgonetka's own carrier detection.
+    private static boolean matches(String keyword, List<String> words, String compact) {
+        return words.stream().anyMatch(word -> word.startsWith(keyword)) || compact.startsWith(keyword);
     }
 }
