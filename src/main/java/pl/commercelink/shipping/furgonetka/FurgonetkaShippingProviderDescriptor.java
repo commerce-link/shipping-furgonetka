@@ -17,6 +17,7 @@ import static pl.commercelink.provider.api.ProviderField.FieldType.TEXT;
 public class FurgonetkaShippingProviderDescriptor implements ShippingProviderDescriptor {
 
     private static final String DEFAULT_API_URL = "https://api.furgonetka.pl";
+    private static final String API_URL_KEY = "FURGONETKA_API_URL";
 
     @Override
     public String name() {
@@ -31,7 +32,7 @@ public class FurgonetkaShippingProviderDescriptor implements ShippingProviderDes
     @Override
     public AuthConfig authConfig() {
         return new AuthConfig.OAuth2(
-                DEFAULT_API_URL,
+                apiUrl(),
                 "/oauth/token",
                 "/oauth/token",
                 29L * 24 * 60 * 60,
@@ -45,7 +46,17 @@ public class FurgonetkaShippingProviderDescriptor implements ShippingProviderDes
                 new ProviderField("username", "API Username", TEXT, true, ""),
                 new ProviderField("password", "API Password", PASSWORD, true, ""),
                 new ProviderField("clientId", "Client ID", TEXT, true, ""),
-                new ProviderField("clientSecret", "Client Secret", PASSWORD, true, ""));
+                new ProviderField("clientSecret", "Client Secret", PASSWORD, true, ""),
+                new ProviderField("webhookToken", "Webhook token", PASSWORD, false, ""));
+    }
+
+    static String apiUrl() {
+        String property = System.getProperty(API_URL_KEY);
+        if (property != null && !property.isBlank()) {
+            return property;
+        }
+        String env = System.getenv(API_URL_KEY);
+        return env != null && !env.isBlank() ? env : DEFAULT_API_URL;
     }
 
     @Override

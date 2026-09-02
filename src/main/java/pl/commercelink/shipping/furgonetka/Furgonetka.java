@@ -210,7 +210,7 @@ class Furgonetka implements ShippingProvider {
         }
     }
 
-    private List<TrackingEvent> getTrackingEvents(String externalId) {
+    public List<TrackingEvent> getTrackingEvents(String externalId) {
         try {
             String path = "/packages/" + externalId + "/tracking";
             TrackingPackageResponse response = restApi.fetchWithAuthRetry(path, new HashMap<>(), TrackingPackageResponse.class);
