@@ -10,6 +10,8 @@ import java.util.stream.Collectors;
 
 class Furgonetka implements ShippingProvider {
 
+    private static final String TRACKING_COMMAND_PATH = "/add-package-to-tracking-command/";
+
     private final RestApiWithRetry restApi;
 
     public Furgonetka(RestApiWithRetry restApi) {
@@ -210,7 +212,8 @@ class Furgonetka implements ShippingProvider {
         }
     }
 
-    private List<TrackingEvent> getTrackingEvents(String externalId) {
+    @Override
+    public List<TrackingEvent> getTrackingEvents(String externalId) {
         try {
             String path = "/packages/" + externalId + "/tracking";
             TrackingPackageResponse response = restApi.fetchWithAuthRetry(path, new HashMap<>(), TrackingPackageResponse.class);
@@ -240,6 +243,56 @@ class Furgonetka implements ShippingProvider {
         } catch (RuntimeException ex) {
             throw handleHttpException(ex);
         }
+    }
+
+    @Override
+    public boolean supportsParcelTracking() {
+        return true;
+    }
+
+    @Override
+    public ParcelTrackingSubscription trackParcel(ParcelTrackingRequest request) {
+        String uuid = UUID.randomUUID().toString();
+        AddPackageToTrackingRequest body = new AddPackageToTrackingRequest(
+                request.trackingNo(),
+                FurgonetkaCarrierServices.serviceFor(request.carrier()).orElse(null),
+                request.label());
+        try {
+            restApi.putWithAuthRetry(TRACKING_COMMAND_PATH + uuid, body, CommandAcceptedResponse.class);
+        } catch (RuntimeException ex) {
+            throw handleHttpException(ex);
+        }
+        return checkParcelTracking(uuid);
+    }
+
+    @Override
+    public ParcelTrackingSubscription checkParcelTracking(String subscriptionId) {
+        TrackingCommandStatusResponse status;
+        try {
+            status = restApi.fetchWithAuthRetry(
+                    TRACKING_COMMAND_PATH + subscriptionId, new HashMap<>(), TrackingCommandStatusResponse.class);
+        } catch (RuntimeException ex) {
+            throw handleHttpException(ex);
+        }
+        return toSubscription(subscriptionId, Objects.requireNonNull(status));
+    }
+
+    private static ParcelTrackingSubscription toSubscription(String subscriptionId, TrackingCommandStatusResponse status) {
+        return switch (String.valueOf(status.getStatus())) {
+            case "successful", "partial_success" -> status.getPackageId() == null
+                    ? ParcelTrackingSubscription.failed(subscriptionId, "Furgonetka could not determine the carrier")
+                    : ParcelTrackingSubscription.active(subscriptionId, String.valueOf(status.getPackageId()), status.getService());
+            case "error" -> ParcelTrackingSubscription.failed(subscriptionId, errorMessage(status));
+            default -> ParcelTrackingSubscription.pending(subscriptionId);
+        };
+    }
+
+    private static String errorMessage(TrackingCommandStatusResponse status) {
+        String joined = status.getErrors().stream()
+                .map(Error::getMessage)
+                .filter(Objects::nonNull)
+                .collect(Collectors.joining("; "));
+        return joined.isEmpty() ? "Furgonetka rejected the tracking request" : joined;
     }
 
     private RuntimeException handleHttpException(RuntimeException ex) {

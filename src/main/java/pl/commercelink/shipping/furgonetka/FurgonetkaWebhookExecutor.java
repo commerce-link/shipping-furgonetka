@@ -2,6 +2,8 @@ package pl.commercelink.shipping.furgonetka;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import pl.commercelink.provider.api.WebhookContext;
 import pl.commercelink.provider.api.WebhookExecutor;
 import pl.commercelink.provider.api.WebhookOutcome;
@@ -9,10 +11,23 @@ import pl.commercelink.provider.api.WebhookStatusResponse;
 import pl.commercelink.shipping.api.ShippingException;
 import pl.commercelink.shipping.api.ShippingWebhookResult;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.time.LocalDateTime;
+import java.util.HexFormat;
+import java.util.Locale;
+import java.util.Optional;
+
 class FurgonetkaWebhookExecutor implements WebhookExecutor<ShippingWebhookResult> {
 
+    static final String WEBHOOK_TOKEN_KEY = "webhookToken";
+
+    private static final Logger log = LoggerFactory.getLogger(FurgonetkaWebhookExecutor.class);
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
     private static final WebhookStatusResponse STATUS_OK = new WebhookStatusResponse("OK");
+    // Answered with HTTP 401 by the app (EventBindingRegistrar.REJECTED_STATUS) so Furgonetka's webhook test fails on a wrong token
+    private static final WebhookStatusResponse STATUS_REJECTED = new WebhookStatusResponse("REJECTED");
 
     @Override
     public WebhookOutcome<ShippingWebhookResult> execute(String payload, WebhookContext ctx) {
@@ -21,16 +36,54 @@ class FurgonetkaWebhookExecutor implements WebhookExecutor<ShippingWebhookResult
         }
         try {
             FurgonetkaWebhookPayload parsed = OBJECT_MAPPER.readValue(payload, FurgonetkaWebhookPayload.class);
+            if (!checksumValid(parsed, ctx)) {
+                log.warn("Furgonetka webhook rejected: checksum mismatch for package_no={} package_id={}"
+                        + " (the webhook token in the store configuration must match the Furgonetka panel)",
+                        parsed.getPackageNo(), parsed.getPackageId());
+                return WebhookOutcome.of(null, STATUS_REJECTED);
+            }
+            if (parsed.getTracking() == null || parsed.getTracking().getState() == null) {
+                log.info("Furgonetka webhook ignored: no tracking state for package_no={}", parsed.getPackageNo());
+                return WebhookOutcome.of(null, STATUS_OK);
+            }
+            Optional<LocalDateTime> datetime = parsed.getTracking().parsedDatetime();
+            if (datetime.isEmpty()) {
+                log.warn("Furgonetka webhook ignored: unparseable datetime '{}' for package_no={}",
+                        parsed.getTracking().getDatetime(), parsed.getPackageNo());
+                return WebhookOutcome.of(null, STATUS_OK);
+            }
             ShippingWebhookResult.ShipmentState state = switch (parsed.getTracking().getState()) {
                 case "collected" -> ShippingWebhookResult.ShipmentState.COLLECTED;
                 case "delivered" -> ShippingWebhookResult.ShipmentState.DELIVERED;
                 default -> ShippingWebhookResult.ShipmentState.OTHER;
             };
             ShippingWebhookResult result = new ShippingWebhookResult(
-                    parsed.getPackageNo(), state, parsed.getTracking().getDatetime());
+                    parsed.getPackageNo(), state, datetime.get());
             return WebhookOutcome.of(result, STATUS_OK);
         } catch (JsonProcessingException e) {
             throw new ShippingException("Failed to parse webhook payload", e);
+        }
+    }
+
+    private static boolean checksumValid(FurgonetkaWebhookPayload parsed, WebhookContext ctx) {
+        String token = ctx == null || ctx.providerConfig() == null ? null : ctx.providerConfig().get(WEBHOOK_TOKEN_KEY);
+        if (token == null || token.isBlank()) {
+            return true;
+        }
+        if (parsed.getControl() == null) {
+            return false;
+        }
+        String expected = md5Hex(parsed.checksumInput(token.trim()));
+        String control = parsed.getControl().trim().toLowerCase(Locale.ROOT);
+        return MessageDigest.isEqual(expected.getBytes(StandardCharsets.UTF_8), control.getBytes(StandardCharsets.UTF_8));
+    }
+
+    static String md5Hex(String input) {
+        try {
+            byte[] digest = MessageDigest.getInstance("MD5").digest(input.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(digest);
+        } catch (NoSuchAlgorithmException e) {
+            throw new ShippingException("MD5 not available", e);
         }
     }
 }
