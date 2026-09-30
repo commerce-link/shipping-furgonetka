@@ -1,5 +1,7 @@
 package pl.commercelink.shipping.furgonetka;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import pl.commercelink.rest.client.HttpClientException;
 import pl.commercelink.rest.client.RestApiWithRetry;
 import pl.commercelink.shipping.api.*;
@@ -9,6 +11,8 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 class Furgonetka implements ShippingProvider {
+
+    private static final Logger log = LoggerFactory.getLogger(Furgonetka.class);
 
     private static final String TRACKING_COMMAND_PATH = "/add-package-to-tracking-command/";
     private static final String CANCEL_COMMAND_PATH = "/cancel-command/";
@@ -163,7 +167,7 @@ class Furgonetka implements ShippingProvider {
     }
 
     @Override
-    public ShipmentCancellation cancelShipment(String externalId) {
+    public ShipmentCancellation cancelShipment(String externalId, String commandId) {
         List<TrackingEvent> events = getTrackingEvents(externalId);
         Set<String> cancelableStates = Set.of("waiting", "ordered", "collect-problem");
 
@@ -175,14 +179,14 @@ class Furgonetka implements ShippingProvider {
                     }
                 });
 
-        String uuid = UUID.randomUUID().toString();
+        // the caller's id is the command's uuid, so a repeated PUT with the same id cannot start a second command
         try {
-            restApi.putWithAuthRetry(CANCEL_COMMAND_PATH + uuid, new CancelPackageRequest(externalId), Void.class);
+            restApi.putWithAuthRetry(CANCEL_COMMAND_PATH + commandId, new CancelPackageRequest(externalId), Void.class);
         } catch (RuntimeException ex) {
             throw handleHttpException(ex);
         }
         // the command runs asynchronously at Furgonetka: its result is read with checkShipmentCancellation
-        return ShipmentCancellation.pending(uuid);
+        return ShipmentCancellation.pending(commandId);
     }
 
     @Override
@@ -198,6 +202,11 @@ class Furgonetka implements ShippingProvider {
     }
 
     private static ShipmentCancellation toCancellation(String commandId, String externalId, CancelCommandStatusResponse status) {
+        status.getDetails().stream()
+                .filter(detail -> externalId.equals(detail.getPackageId()) && detail.getSuccessMessageType() != null)
+                .findFirst()
+                .ifPresent(detail -> log.info("Furgonetka cancel command {} for package {}: success_message_type={}",
+                        commandId, externalId, detail.getSuccessMessageType()));
         List<String> others = status.getDetails().stream()
                 .filter(CancelCommandStatusResponse.Detail::isCancelled)
                 .map(CancelCommandStatusResponse.Detail::getPackageId)

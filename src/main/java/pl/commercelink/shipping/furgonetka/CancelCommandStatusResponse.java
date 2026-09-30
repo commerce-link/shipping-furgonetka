@@ -40,8 +40,16 @@ class CancelCommandStatusResponse {
         @JsonProperty("cancel_success")
         private Boolean cancelSuccess;
 
+        // how Furgonetka settled the package, e.g. "success"; logged only, its values are not documented
+        @JsonProperty("success_message_type")
+        private String successMessageType;
+
         String getPackageId() {
             return packageId;
+        }
+
+        String getSuccessMessageType() {
+            return successMessageType;
         }
 
         boolean isCancelled() {

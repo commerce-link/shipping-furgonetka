@@ -9,13 +9,19 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import pl.commercelink.rest.client.RestApiWithRetry;
 import pl.commercelink.shipping.api.ShipmentCancellation;
+import pl.commercelink.shipping.api.ShippingException;
 
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyMap;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -42,7 +48,7 @@ class FurgonetkaCancellationTest {
     }
 
     @Test
-    void cancelShipmentPutsCommandForOnePackageAndReturnsPendingWithItsUuid() throws Exception {
+    void cancelShipmentPutsCommandUnderTheCallersIdAndReturnsPendingWithIt() throws Exception {
         // given
         when(restApi.fetchWithAuthRetry(eq("/packages/21353832/tracking"), anyMap(), eq(TrackingPackageResponse.class)))
                 .thenReturn(new TrackingPackageResponse());
@@ -51,17 +57,29 @@ class FurgonetkaCancellationTest {
         when(restApi.putWithAuthRetry(path.capture(), body.capture(), eq(Void.class))).thenReturn(null);
 
         // when
-        ShipmentCancellation result = furgonetka().cancelShipment("21353832");
+        ShipmentCancellation result = furgonetka().cancelShipment("21353832", "cmd-from-caller");
 
         // then
-        assertTrue(path.getValue().startsWith("/cancel-command/"));
-        String uuid = path.getValue().substring("/cancel-command/".length());
-        assertEquals(36, uuid.length());
+        assertEquals("/cancel-command/cmd-from-caller", path.getValue());
         JsonNode json = OBJECT_MAPPER.readTree(OBJECT_MAPPER.writeValueAsString(body.getValue()));
         assertEquals(1, json.get("packages").size());
         assertEquals("21353832", json.get("packages").get(0).get("id").asText());
         assertEquals(ShipmentCancellation.Status.PENDING, result.status());
-        assertEquals(uuid, result.commandId());
+        assertEquals("cmd-from-caller", result.commandId());
+    }
+
+    @Test
+    void cancelShipmentRefusesAPackageInTransitBeforeSendingTheCommand() throws Exception {
+        // given
+        TrackingPackageResponse tracking = new ObjectMapper().findAndRegisterModules().readValue(
+                "{\"tracking\":[{\"state\":\"transit\",\"status\":\"in transit\",\"datetime\":\"2026-09-29T10:00:00+02:00\"}]}",
+                TrackingPackageResponse.class);
+        when(restApi.fetchWithAuthRetry(eq("/packages/21353832/tracking"), anyMap(), eq(TrackingPackageResponse.class)))
+                .thenReturn(tracking);
+
+        // when / then
+        assertThrows(ShippingException.class, () -> furgonetka().cancelShipment("21353832", "cmd-from-caller"));
+        verify(restApi, never()).putWithAuthRetry(anyString(), any(), any());
     }
 
     @Test
@@ -99,6 +117,16 @@ class FurgonetkaCancellationTest {
         assertEquals(ShipmentCancellation.Status.SUCCEEDED, result.status());
         assertEquals("cmd-1", result.commandId());
         assertTrue(result.otherCancelledPackageIds().isEmpty());
+    }
+
+    @Test
+    void cancelCommandDetailReadsTheSuccessMessageType() throws Exception {
+        // when
+        CancelCommandStatusResponse status = response("{\"status\":\"successful\",\"cancel_command_details\":"
+                + "[{\"package_id\":21353832,\"cancel_success\":true,\"success_message_type\":\"success\"}]}");
+
+        // then
+        assertEquals("success", status.getDetails().get(0).getSuccessMessageType());
     }
 
     @Test
