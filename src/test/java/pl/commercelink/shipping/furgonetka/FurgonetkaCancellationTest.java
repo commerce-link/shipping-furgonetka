@@ -7,6 +7,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import pl.commercelink.rest.client.HttpClientException;
 import pl.commercelink.rest.client.RestApiWithRetry;
 import pl.commercelink.shipping.api.ShipmentCancellation;
 import pl.commercelink.shipping.api.ShippingException;
@@ -80,6 +81,65 @@ class FurgonetkaCancellationTest {
         // when / then
         assertThrows(ShippingException.class, () -> furgonetka().cancelShipment("21353832", "cmd-from-caller"));
         verify(restApi, never()).putWithAuthRetry(anyString(), any(), any());
+    }
+
+    @Test
+    void cancelShipmentOfAPackageAlreadyCancelledAtFurgonetkaSucceedsWithoutSendingTheCommand() throws Exception {
+        // given: the package was cancelled in the Furgonetka panel, so its latest tracking state is canceled
+        TrackingPackageResponse tracking = new ObjectMapper().findAndRegisterModules().readValue(
+                "{\"tracking\":[{\"state\":\"ordered\",\"status\":\"ordered\",\"datetime\":\"2026-09-29T10:00:00+02:00\"},"
+                        + "{\"state\":\"canceled\",\"status\":\"canceled\",\"datetime\":\"2026-09-29T11:00:00+02:00\"}]}",
+                TrackingPackageResponse.class);
+        when(restApi.fetchWithAuthRetry(eq("/packages/21353832/tracking"), anyMap(), eq(TrackingPackageResponse.class)))
+                .thenReturn(tracking);
+
+        // when
+        ShipmentCancellation result = furgonetka().cancelShipment("21353832", "cmd-from-caller");
+
+        // then
+        assertEquals(ShipmentCancellation.Status.SUCCEEDED, result.status());
+        assertEquals("cmd-from-caller", result.commandId());
+        assertTrue(result.otherCancelledPackageIds().isEmpty());
+        verify(restApi, never()).putWithAuthRetry(anyString(), any(), any());
+    }
+
+    @Test
+    void checkOfACommandFurgonetkaNeverReceivedFails() {
+        // given: Furgonetka answers 400 commandNotExists for an unknown command uuid
+        when(restApi.fetchWithAuthRetry(eq(COMMAND_PATH), anyMap(), eq(CancelCommandStatusResponse.class)))
+                .thenThrow(new HttpClientException(400,
+                        "{\"errors\":[{\"path\":\"/uuid\",\"message\":\"Operacja nie istnieje.\",\"code\":\"commandNotExists\"}]}"));
+
+        // when
+        ShipmentCancellation result = furgonetka().checkShipmentCancellation("cmd-1", "21353832");
+
+        // then
+        assertEquals(ShipmentCancellation.Status.FAILED, result.status());
+        assertEquals("cmd-1", result.commandId());
+        assertEquals("Furgonetka did not receive the cancel command", result.error());
+        assertTrue(result.otherCancelledPackageIds().isEmpty());
+    }
+
+    @Test
+    void checkPropagatesOtherHttpErrors() {
+        // given
+        when(restApi.fetchWithAuthRetry(eq(COMMAND_PATH), anyMap(), eq(CancelCommandStatusResponse.class)))
+                .thenThrow(new HttpClientException(400, "{\"errors\":[{\"code\":\"somethingElse\"}]}"));
+
+        // when / then
+        ShippingException ex = assertThrows(ShippingException.class,
+                () -> furgonetka().checkShipmentCancellation("cmd-1", "21353832"));
+        assertTrue(ex.getCause() instanceof HttpClientException);
+    }
+
+    @Test
+    void checkPropagatesServerErrorsEvenWithTheCommandNotExistsCode() {
+        // given
+        when(restApi.fetchWithAuthRetry(eq(COMMAND_PATH), anyMap(), eq(CancelCommandStatusResponse.class)))
+                .thenThrow(new HttpClientException(500, "commandNotExists"));
+
+        // when / then
+        assertThrows(ShippingException.class, () -> furgonetka().checkShipmentCancellation("cmd-1", "21353832"));
     }
 
     @Test

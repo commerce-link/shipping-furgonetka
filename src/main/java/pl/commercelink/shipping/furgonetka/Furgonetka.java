@@ -171,13 +171,17 @@ class Furgonetka implements ShippingProvider {
         List<TrackingEvent> events = getTrackingEvents(externalId);
         Set<String> cancelableStates = Set.of("waiting", "ordered", "collect-problem");
 
-        events.stream()
+        Optional<String> latestState = events.stream()
                 .max(Comparator.comparing(TrackingEvent::datetime))
-                .ifPresent(event -> {
-                    if (!cancelableStates.contains(event.state())) {
-                        throw new ShippingException("Shipment cannot be cancelled — package is already in transit");
-                    }
-                });
+                .map(TrackingEvent::state);
+        if (latestState.filter("canceled"::equals).isPresent()) {
+            // cancelled elsewhere (e.g. in the Furgonetka panel): nothing left to send, the outcome is already known
+            log.info("Furgonetka package {} already cancelled at Furgonetka", externalId);
+            return ShipmentCancellation.succeeded(commandId, List.of());
+        }
+        if (latestState.filter(state -> !cancelableStates.contains(state)).isPresent()) {
+            throw new ShippingException("Shipment cannot be cancelled — package is already in transit");
+        }
 
         // the caller's id is the command's uuid, so a repeated PUT with the same id cannot start a second command
         try {
@@ -195,6 +199,13 @@ class Furgonetka implements ShippingProvider {
         try {
             status = restApi.fetchWithAuthRetry(
                     CANCEL_COMMAND_PATH + commandId, new HashMap<>(), CancelCommandStatusResponse.class);
+        } catch (HttpClientException ex) {
+            if (isCommandNotExists(ex)) {
+                // the PUT never reached Furgonetka, so the package was not cancelled by this command
+                log.info("Furgonetka does not know cancel command {} for package {}", commandId, externalId);
+                return ShipmentCancellation.failed(commandId, "Furgonetka did not receive the cancel command", List.of());
+            }
+            throw handleHttpException(ex);
         } catch (RuntimeException ex) {
             throw handleHttpException(ex);
         }
@@ -340,6 +351,12 @@ class Furgonetka implements ShippingProvider {
                 .filter(Objects::nonNull)
                 .collect(Collectors.joining("; "));
         return joined.isEmpty() ? "Furgonetka rejected the tracking request" : joined;
+    }
+
+    private static boolean isCommandNotExists(HttpClientException ex) {
+        return ex.getStatusCode() == 400
+                && ex.getResponseBody() != null
+                && ex.getResponseBody().contains("commandNotExists");
     }
 
     private RuntimeException handleHttpException(RuntimeException ex) {
