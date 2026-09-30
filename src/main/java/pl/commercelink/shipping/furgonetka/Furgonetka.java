@@ -11,6 +11,7 @@ import java.util.stream.Collectors;
 class Furgonetka implements ShippingProvider {
 
     private static final String TRACKING_COMMAND_PATH = "/add-package-to-tracking-command/";
+    private static final String CANCEL_COMMAND_PATH = "/cancel-command/";
 
     private final RestApiWithRetry restApi;
 
@@ -162,7 +163,7 @@ class Furgonetka implements ShippingProvider {
     }
 
     @Override
-    public void cancelShipment(String externalId) {
+    public ShipmentCancellation cancelShipment(String externalId) {
         List<TrackingEvent> events = getTrackingEvents(externalId);
         Set<String> cancelableStates = Set.of("waiting", "ordered", "collect-problem");
 
@@ -174,13 +175,50 @@ class Furgonetka implements ShippingProvider {
                     }
                 });
 
+        String uuid = UUID.randomUUID().toString();
         try {
-            String uuid = UUID.randomUUID().toString();
-            CancelPackageRequest cancelPackageRequest = new CancelPackageRequest(externalId);
-            restApi.putWithAuthRetry("/cancel-command/" + uuid, cancelPackageRequest, Void.class);
+            restApi.putWithAuthRetry(CANCEL_COMMAND_PATH + uuid, new CancelPackageRequest(externalId), Void.class);
         } catch (RuntimeException ex) {
             throw handleHttpException(ex);
         }
+        // the command runs asynchronously at Furgonetka: its result is read with checkShipmentCancellation
+        return ShipmentCancellation.pending(uuid);
+    }
+
+    @Override
+    public ShipmentCancellation checkShipmentCancellation(String commandId, String externalId) {
+        CancelCommandStatusResponse status;
+        try {
+            status = restApi.fetchWithAuthRetry(
+                    CANCEL_COMMAND_PATH + commandId, new HashMap<>(), CancelCommandStatusResponse.class);
+        } catch (RuntimeException ex) {
+            throw handleHttpException(ex);
+        }
+        return toCancellation(commandId, externalId, Objects.requireNonNull(status));
+    }
+
+    private static ShipmentCancellation toCancellation(String commandId, String externalId, CancelCommandStatusResponse status) {
+        List<String> others = status.getDetails().stream()
+                .filter(CancelCommandStatusResponse.Detail::isCancelled)
+                .map(CancelCommandStatusResponse.Detail::getPackageId)
+                .filter(id -> id != null && !id.equals(externalId))
+                .toList();
+        return switch (String.valueOf(status.getStatus())) {
+            case "successful", "partial_success" -> status.getDetails().stream()
+                    .anyMatch(detail -> externalId.equals(detail.getPackageId()) && detail.isCancelled())
+                    ? ShipmentCancellation.succeeded(commandId, others)
+                    : ShipmentCancellation.failed(commandId, cancelErrorMessage(status, externalId), others);
+            case "error" -> ShipmentCancellation.failed(commandId, cancelErrorMessage(status, externalId), others);
+            default -> ShipmentCancellation.pending(commandId);
+        };
+    }
+
+    private static String cancelErrorMessage(CancelCommandStatusResponse status, String externalId) {
+        String joined = status.getErrors().stream()
+                .map(Error::getMessage)
+                .filter(Objects::nonNull)
+                .collect(Collectors.joining("; "));
+        return joined.isEmpty() ? "Furgonetka did not cancel package " + externalId : joined;
     }
 
     OrderPackageResponse orderPackage(String packageId, boolean skipEmail) {
