@@ -1,5 +1,7 @@
 package pl.commercelink.shipping.furgonetka;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import pl.commercelink.rest.client.HttpClientException;
 import pl.commercelink.rest.client.RestApiWithRetry;
 import pl.commercelink.shipping.api.*;
@@ -10,7 +12,10 @@ import java.util.stream.Collectors;
 
 class Furgonetka implements ShippingProvider {
 
+    private static final Logger log = LoggerFactory.getLogger(Furgonetka.class);
+
     private static final String TRACKING_COMMAND_PATH = "/add-package-to-tracking-command/";
+    private static final String CANCEL_COMMAND_PATH = "/cancel-command/";
 
     private final RestApiWithRetry restApi;
 
@@ -162,25 +167,78 @@ class Furgonetka implements ShippingProvider {
     }
 
     @Override
-    public void cancelShipment(String externalId) {
+    public ShipmentCancellation cancelShipment(String externalId, String commandId) {
         List<TrackingEvent> events = getTrackingEvents(externalId);
         Set<String> cancelableStates = Set.of("waiting", "ordered", "collect-problem");
 
-        events.stream()
+        Optional<String> latestState = events.stream()
                 .max(Comparator.comparing(TrackingEvent::datetime))
-                .ifPresent(event -> {
-                    if (!cancelableStates.contains(event.state())) {
-                        throw new ShippingException("Shipment cannot be cancelled — package is already in transit");
-                    }
-                });
+                .map(TrackingEvent::state);
+        if (latestState.filter("canceled"::equals).isPresent()) {
+            // cancelled elsewhere (e.g. in the Furgonetka panel): nothing left to send, the outcome is already known
+            log.info("Furgonetka package {} already cancelled at Furgonetka", externalId);
+            return ShipmentCancellation.succeeded(commandId, List.of());
+        }
+        if (latestState.filter(state -> !cancelableStates.contains(state)).isPresent()) {
+            throw new ShippingException("Shipment cannot be cancelled — package is already in transit");
+        }
 
+        // the caller's id is the command's uuid, so a repeated PUT with the same id cannot start a second command
         try {
-            String uuid = UUID.randomUUID().toString();
-            CancelPackageRequest cancelPackageRequest = new CancelPackageRequest(externalId);
-            restApi.putWithAuthRetry("/cancel-command/" + uuid, cancelPackageRequest, Void.class);
+            restApi.putWithAuthRetry(CANCEL_COMMAND_PATH + commandId, new CancelPackageRequest(externalId), Void.class);
         } catch (RuntimeException ex) {
             throw handleHttpException(ex);
         }
+        // the command runs asynchronously at Furgonetka: its result is read with checkShipmentCancellation
+        return ShipmentCancellation.pending(commandId);
+    }
+
+    @Override
+    public ShipmentCancellation checkShipmentCancellation(String commandId, String externalId) {
+        CancelCommandStatusResponse status;
+        try {
+            status = restApi.fetchWithAuthRetry(
+                    CANCEL_COMMAND_PATH + commandId, new HashMap<>(), CancelCommandStatusResponse.class);
+        } catch (HttpClientException ex) {
+            if (isCommandNotExists(ex)) {
+                // the PUT never reached Furgonetka, so the package was not cancelled by this command
+                log.info("Furgonetka does not know cancel command {} for package {}", commandId, externalId);
+                return ShipmentCancellation.failed(commandId, "Furgonetka did not receive the cancel command", List.of());
+            }
+            throw handleHttpException(ex);
+        } catch (RuntimeException ex) {
+            throw handleHttpException(ex);
+        }
+        return toCancellation(commandId, externalId, Objects.requireNonNull(status));
+    }
+
+    private static ShipmentCancellation toCancellation(String commandId, String externalId, CancelCommandStatusResponse status) {
+        status.getDetails().stream()
+                .filter(detail -> externalId.equals(detail.getPackageId()) && detail.getSuccessMessageType() != null)
+                .findFirst()
+                .ifPresent(detail -> log.info("Furgonetka cancel command {} for package {}: success_message_type={}",
+                        commandId, externalId, detail.getSuccessMessageType()));
+        List<String> others = status.getDetails().stream()
+                .filter(CancelCommandStatusResponse.Detail::isCancelled)
+                .map(CancelCommandStatusResponse.Detail::getPackageId)
+                .filter(id -> id != null && !id.equals(externalId))
+                .toList();
+        return switch (String.valueOf(status.getStatus())) {
+            case "successful", "partial_success" -> status.getDetails().stream()
+                    .anyMatch(detail -> externalId.equals(detail.getPackageId()) && detail.isCancelled())
+                    ? ShipmentCancellation.succeeded(commandId, others)
+                    : ShipmentCancellation.failed(commandId, cancelErrorMessage(status, externalId), others);
+            case "error" -> ShipmentCancellation.failed(commandId, cancelErrorMessage(status, externalId), others);
+            default -> ShipmentCancellation.pending(commandId);
+        };
+    }
+
+    private static String cancelErrorMessage(CancelCommandStatusResponse status, String externalId) {
+        String joined = status.getErrors().stream()
+                .map(Error::getMessage)
+                .filter(Objects::nonNull)
+                .collect(Collectors.joining("; "));
+        return joined.isEmpty() ? "Furgonetka did not cancel package " + externalId : joined;
     }
 
     OrderPackageResponse orderPackage(String packageId, boolean skipEmail) {
@@ -293,6 +351,12 @@ class Furgonetka implements ShippingProvider {
                 .filter(Objects::nonNull)
                 .collect(Collectors.joining("; "));
         return joined.isEmpty() ? "Furgonetka rejected the tracking request" : joined;
+    }
+
+    private static boolean isCommandNotExists(HttpClientException ex) {
+        return ex.getStatusCode() == 400
+                && ex.getResponseBody() != null
+                && ex.getResponseBody().contains("commandNotExists");
     }
 
     private RuntimeException handleHttpException(RuntimeException ex) {
