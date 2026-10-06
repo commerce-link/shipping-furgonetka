@@ -8,6 +8,9 @@ import pl.commercelink.rest.client.RestApiWithRetry;
 import pl.commercelink.shipping.api.*;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.time.LocalTime;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -19,6 +22,9 @@ class Furgonetka implements ShippingProvider {
     private static final String CANCEL_COMMAND_PATH = "/cancel-command/";
     private static final String ORDER_COMMAND_PATH = "/order-commands/";
     private static final String LABEL_ACCEPT = "application/pdf, text/plain";
+
+    private static final String PICKUP_COMMAND_PATH = "/pickup-commands/";
+    private static final DateTimeFormatter HOUR = DateTimeFormatter.ofPattern("HH:mm");
 
     private final RestApiWithRetry restApi;
 
@@ -325,20 +331,80 @@ class Furgonetka implements ShippingProvider {
         }
     }
 
-    OrderPickupResponse orderPickup(List<String> packageIds) {
+    @Override
+    public boolean supportsPickups() {
+        return true;
+    }
+
+    @Override
+    public List<PickupWindow> pickupWindows(List<String> externalIds, LocalDate readyDate, int daysAhead) {
+        PickupDateProposalsResponse response;
         try {
-            String uuid = UUID.randomUUID().toString();
-
-            OrderPickupRequest orderPickupRequest = new OrderPickupRequest();
-            orderPickupRequest.setPackages(packageIds.stream()
-                    .map(PackageId::new)
-                    .collect(Collectors.toList()));
-
-            return restApi.putWithAuthRetry(
-                    "/pickup-commands/" + uuid, orderPickupRequest, OrderPickupResponse.class);
+            response = restApi.postWithAuthRetry("/packages/pickup-date-proposals",
+                    new PickupDateProposalsRequest(packageIds(externalIds), readyDate.toString(), daysAhead),
+                    PickupDateProposalsResponse.class);
         } catch (RuntimeException ex) {
             throw handleHttpException(ex);
         }
+        List<PickupDateProposalsResponse.PackageProposals> perPackage = Objects.requireNonNull(response).getPackages();
+        if (perPackage.isEmpty()) {
+            return List.of();
+        }
+        // a window counts only when every package can be picked up in it: one courier comes for all of them
+        Map<String, PickupWindow> common = new LinkedHashMap<>();
+        perPackage.get(0).getProposals().stream()
+                .filter(PickupDateProposalsResponse.Proposal::isAvailable)
+                .forEach(p -> common.put(p.getHash(), new PickupWindow(LocalDate.parse(p.getDate()),
+                        LocalTime.parse(p.getMinTime()), LocalTime.parse(p.getMaxTime()), p.getHash())));
+        for (PickupDateProposalsResponse.PackageProposals other : perPackage.subList(1, perPackage.size())) {
+            Set<String> available = other.getProposals().stream()
+                    .filter(PickupDateProposalsResponse.Proposal::isAvailable)
+                    .map(PickupDateProposalsResponse.Proposal::getHash)
+                    .collect(Collectors.toSet());
+            common.keySet().retainAll(available);
+        }
+        return common.values().stream().sorted().toList();
+    }
+
+    @Override
+    public PickupOrder orderPickup(List<String> externalIds, PickupWindow window, String commandId) {
+        PickupCommandRequest body = new PickupCommandRequest(packageIds(externalIds), new PickupCommandRequest.PickupDate(
+                window.date().toString(), window.from().format(HOUR), window.to().format(HOUR), window.token()));
+        try {
+            restApi.putWithAuthRetry(PICKUP_COMMAND_PATH + commandId, body, Void.class);
+        } catch (RuntimeException ex) {
+            throw handleHttpException(ex);
+        }
+        return PickupOrder.pending(commandId, externalIds, window);
+    }
+
+    @Override
+    public PickupOrder checkPickupOrder(String commandId) {
+        PickupCommandStatusResponse status;
+        try {
+            status = restApi.fetchWithAuthRetry(PICKUP_COMMAND_PATH + commandId, new HashMap<>(), PickupCommandStatusResponse.class);
+        } catch (HttpClientException ex) {
+            if (isCommandNotExists(ex)) {
+                return PickupOrder.failed(commandId, List.of(), "Furgonetka did not receive the pickup command");
+            }
+            throw handleHttpException(ex);
+        } catch (RuntimeException ex) {
+            throw handleHttpException(ex);
+        }
+        Objects.requireNonNull(status);
+        return switch (String.valueOf(status.getStatus())) {
+            case "successful", "partial_success" -> status.getDetails().stream().findFirst()
+                    .map(d -> PickupOrder.succeeded(commandId, d.getPickupId(), null, d.getPackageIds()))
+                    .orElseGet(() -> PickupOrder.failed(commandId, List.of(),
+                            joinedErrors(status.getErrors(), "Furgonetka did not order the pickup")));
+            case "error" -> PickupOrder.failed(commandId, List.of(),
+                    joinedErrors(status.getErrors(), "Furgonetka did not order the pickup"));
+            default -> PickupOrder.pending(commandId, List.of(), null);
+        };
+    }
+
+    private static List<PackageId> packageIds(List<String> externalIds) {
+        return externalIds.stream().map(PackageId::new).toList();
     }
 
     @Override
