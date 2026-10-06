@@ -169,12 +169,12 @@ class FurgonetkaPickupTest {
     }
 
     @Test
-    void checkOfAnUnknownPickupCommandFails() {
+    void checkOfAPickupCommandFurgonetkaDoesNotKnowYetStaysPending() {
         // given
         when(restApi.fetchWithAuthRetry(eq("/pickup-commands/cmd-1"), anyMap(), eq(PickupCommandStatusResponse.class)))
                 .thenThrow(new HttpClientException(400, "{\"errors\":[{\"code\":\"commandNotExists\"}]}"));
 
         // when / then
-        assertEquals(CommandStatus.FAILED, furgonetka().checkPickupOrder("cmd-1").status());
+        assertEquals(CommandStatus.PENDING, furgonetka().checkPickupOrder("cmd-1").status());
     }
 }

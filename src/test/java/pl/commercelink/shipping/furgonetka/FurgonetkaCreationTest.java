@@ -197,7 +197,7 @@ class FurgonetkaCreationTest {
     }
 
     @Test
-    void checkOfACommandFurgonetkaNeverReceivedFails() {
+    void checkOfACommandFurgonetkaDoesNotKnowYetStaysPending() {
         // given
         when(restApi.fetchWithAuthRetry(eq("/order-commands/cmd-1"), anyMap(), eq(OrderCommandStatusResponse.class)))
                 .thenThrow(new HttpClientException(400, "{\"errors\":[{\"code\":\"commandNotExists\"}]}"));
@@ -205,9 +205,9 @@ class FurgonetkaCreationTest {
         // when
         ShipmentCreation result = furgonetka().checkShipmentCreation("cmd-1", "21480003");
 
-        // then
-        assertEquals(CommandStatus.FAILED, result.status());
-        assertEquals("Furgonetka did not receive the order command", result.error());
+        // then: an unanswered command may still be saved, so failing it would invite a second paid package
+        assertEquals(CommandStatus.PENDING, result.status());
+        assertEquals("21480003", result.externalId());
     }
 
     @Test

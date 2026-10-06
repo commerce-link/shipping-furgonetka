@@ -185,7 +185,10 @@ class Furgonetka implements ShippingProvider {
             status = restApi.fetchWithAuthRetry(ORDER_COMMAND_PATH + commandId, new HashMap<>(), OrderCommandStatusResponse.class);
         } catch (HttpClientException ex) {
             if (isCommandNotExists(ex)) {
-                return ShipmentCreation.failed(commandId, externalId, "Furgonetka did not receive the order command");
+                // the order command may have been sent without an answer (5xx, timeout) and still be saved later:
+                // calling it failed would invite a retry, i.e. a second paid package; the caller's attempt limit ends it
+                log.warn("Order command {} is not known to Furgonetka yet; still pending", commandId);
+                return ShipmentCreation.pending(commandId, externalId);
             }
             throw handleHttpException(ex);
         } catch (RuntimeException ex) {
@@ -394,7 +397,9 @@ class Furgonetka implements ShippingProvider {
             status = restApi.fetchWithAuthRetry(PICKUP_COMMAND_PATH + commandId, new HashMap<>(), PickupCommandStatusResponse.class);
         } catch (HttpClientException ex) {
             if (isCommandNotExists(ex)) {
-                return PickupOrder.failed(commandId, List.of(), "Furgonetka did not receive the pickup command");
+                // as for the order command: an unanswered pickup command may still be saved, so it is not failed yet
+                log.warn("Pickup command {} is not known to Furgonetka yet; still pending", commandId);
+                return PickupOrder.pending(commandId, List.of(), null);
             }
             throw handleHttpException(ex);
         } catch (RuntimeException ex) {
