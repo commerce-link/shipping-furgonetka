@@ -111,6 +111,59 @@ class FurgonetkaCreationTest {
     }
 
     @Test
+    void checkOfAPackageWhoseCourierFurgonetkaBookedCarriesThePickupNumberAndNeedsNoPickup() throws Exception {
+        // given: shape of a DPD customer return read from the sandbox (pickup booked with the order command)
+        when(restApi.fetchWithAuthRetry(eq("/order-commands/cmd-1"), anyMap(), eq(OrderCommandStatusResponse.class)))
+                .thenReturn(json("{\"status\":\"successful\",\"errors\":[],\"successfully_ordered_packages\":[21486850]}",
+                        OrderCommandStatusResponse.class));
+        when(restApi.fetchWithAuthRetry(eq("/packages/21486850"), anyMap(), eq(Package.class)))
+                .thenReturn(json("{\"package_id\":\"21486850\",\"pickup_available\":false,"
+                        + "\"pickup_number\":\"APP/CRIN/13023761\",\"pickup_date\":null,\"state\":\"ordered\","
+                        + "\"service\":\"dpd\",\"type\":\"package\",\"parcels\":[{\"package_no\":\"0000014898901T\","
+                        + "\"service\":\"dpd\",\"state\":\"ordered\"}]}", Package.class));
+
+        // when
+        ShipmentCreation result = furgonetka().checkShipmentCreation("cmd-1", "21486850");
+
+        // then
+        ShipmentResult.ShipmentParcelResult parcel = result.result().parcels().get(0);
+        assertEquals("0000014898901T", parcel.trackingNo());
+        assertFalse(parcel.pickupRequired());
+        assertEquals("APP/CRIN/13023761", parcel.pickupNumber());
+    }
+
+    @Test
+    void checkOfAPackageWithABlankPickupNumberStillNeedsAPickup() throws Exception {
+        // given
+        when(restApi.fetchWithAuthRetry(eq("/order-commands/cmd-1"), anyMap(), eq(OrderCommandStatusResponse.class)))
+                .thenReturn(json("{\"status\":\"successful\",\"successfully_ordered_packages\":[21480003]}",
+                        OrderCommandStatusResponse.class));
+        when(restApi.fetchWithAuthRetry(eq("/packages/21480003"), anyMap(), eq(Package.class)))
+                .thenReturn(json("{\"package_id\":\"21480003\",\"pickup_available\":true,\"pickup_number\":\"\","
+                        + "\"parcels\":[{\"package_no\":\"X1\"}]}", Package.class));
+
+        // when
+        ShipmentCreation result = furgonetka().checkShipmentCreation("cmd-1", "21480003");
+
+        // then
+        ShipmentResult.ShipmentParcelResult parcel = result.result().parcels().get(0);
+        assertTrue(parcel.pickupRequired());
+        assertNull(parcel.pickupNumber());
+    }
+
+    @Test
+    void packageSentToFurgonetkaDoesNotCarryAPickupNumber() throws Exception {
+        // given
+        Package pkg = json("{\"package_id\":\"1\",\"pickup_number\":\"APP/CRIN/1\"}", Package.class);
+
+        // when
+        JsonNode sent = JSON.readTree(JSON.writeValueAsString(pkg));
+
+        // then
+        assertFalse(sent.has("pickup_number"));
+    }
+
+    @Test
     void checkWithoutExternalIdReadsOrderedPackageFromCommand() throws Exception {
         // given
         when(restApi.fetchWithAuthRetry(eq("/order-commands/cmd-1"), anyMap(), eq(OrderCommandStatusResponse.class)))

@@ -209,10 +209,13 @@ class Furgonetka implements ShippingProvider {
                     "Furgonetka did not order the package"));
         }
         Package details = getPackageDetails(packageId);
-        boolean pickupRequired = details.isPickupAvailable();
+        // Furgonetka books the courier itself for some packages (e.g. a return collected from a customer): it then
+        // reports pickup_available=false with a pickup_number, and no pickup is left to order.
+        String pickupNumber = details.getPickupNumber();
+        boolean pickupRequired = details.isPickupAvailable() && pickupNumber == null;
         List<ShipmentResult.ShipmentParcelResult> parcels = details.getParcels().stream()
                 .map(p -> new ShipmentResult.ShipmentParcelResult(p.getPackageNo(), p.getService(), p.getTrackingUrl(),
-                        pickupRequired))
+                        pickupRequired, pickupNumber))
                 .toList();
         String managementUrl = parcels.isEmpty() ? null
                 : "https://furgonetka.pl/konto/zamowione/" + parcels.get(0).trackingNo();
