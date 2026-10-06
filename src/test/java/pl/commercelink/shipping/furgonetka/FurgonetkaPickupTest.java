@@ -136,6 +136,24 @@ class FurgonetkaPickupTest {
     }
 
     @Test
+    void checkOfAPartialPickupListsThePackagesOfEveryDetail() throws Exception {
+        // given
+        when(restApi.fetchWithAuthRetry(eq("/pickup-commands/cmd-1"), anyMap(), eq(PickupCommandStatusResponse.class)))
+                .thenReturn(JSON.readValue("{\"status\":\"partial_success\",\"errors\":[],\"pickup_details\":["
+                        + "{\"pickup_id\":\"20261006800071\",\"package_ids\":[21480003]},"
+                        + "{\"pickup_id\":\"20261006800072\",\"package_ids\":[21480005]}]}",
+                        PickupCommandStatusResponse.class));
+
+        // when
+        PickupOrder order = furgonetka().checkPickupOrder("cmd-1");
+
+        // then
+        assertEquals(CommandStatus.SUCCEEDED, order.status());
+        assertEquals("20261006800071", order.pickupId());
+        assertEquals(List.of("21480003", "21480005"), order.externalIds());
+    }
+
+    @Test
     void checkOfAFailedPickupCarriesTheMessage() throws Exception {
         // given
         when(restApi.fetchWithAuthRetry(eq("/pickup-commands/cmd-1"), anyMap(), eq(PickupCommandStatusResponse.class)))

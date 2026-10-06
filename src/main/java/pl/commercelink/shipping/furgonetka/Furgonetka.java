@@ -399,10 +399,12 @@ class Furgonetka implements ShippingProvider {
         }
         Objects.requireNonNull(status);
         return switch (String.valueOf(status.getStatus())) {
-            case "successful", "partial_success" -> status.getDetails().stream().findFirst()
-                    .map(d -> PickupOrder.succeeded(commandId, d.getPickupId(), null, d.getPackageIds()))
-                    .orElseGet(() -> PickupOrder.failed(commandId, List.of(),
-                            joinedErrors(status.getErrors(), "Furgonetka did not order the pickup")));
+            case "successful", "partial_success" -> status.getDetails().isEmpty()
+                    ? PickupOrder.failed(commandId, List.of(),
+                            joinedErrors(status.getErrors(), "Furgonetka did not order the pickup"))
+                    // one detail per pickup Furgonetka booked: a package listed in none of them was not picked up
+                    : PickupOrder.succeeded(commandId, status.getDetails().get(0).getPickupId(), null,
+                            status.getDetails().stream().flatMap(d -> d.getPackageIds().stream()).distinct().toList());
             case "error" -> PickupOrder.failed(commandId, List.of(),
                     joinedErrors(status.getErrors(), "Furgonetka did not order the pickup"));
             default -> PickupOrder.pending(commandId, List.of(), null);
