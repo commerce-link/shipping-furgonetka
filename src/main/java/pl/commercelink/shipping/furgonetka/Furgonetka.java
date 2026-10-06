@@ -372,8 +372,14 @@ class Furgonetka implements ShippingProvider {
                 window.date().toString(), window.from().format(HOUR), window.to().format(HOUR), window.token()));
         try {
             restApi.putWithAuthRetry(PICKUP_COMMAND_PATH + commandId, body, Void.class);
+        } catch (HttpClientException ex) {
+            if (ex.getStatusCode() >= 400 && ex.getStatusCode() < 500) {
+                throw handleHttpException(ex);
+            }
+            log.warn("Pickup command {} has an unknown outcome: {}", commandId, ex.getMessage());
         } catch (RuntimeException ex) {
-            throw handleHttpException(ex);
+            // no answer: the command may have reached Furgonetka; checkPickupOrder finds out
+            log.warn("Pickup command {} has an unknown outcome: {}", commandId, ex.getMessage());
         }
         return PickupOrder.pending(commandId, externalIds, window);
     }

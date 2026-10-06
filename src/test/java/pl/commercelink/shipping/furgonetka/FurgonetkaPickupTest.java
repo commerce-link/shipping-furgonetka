@@ -92,6 +92,34 @@ class FurgonetkaPickupTest {
     }
 
     @Test
+    void orderPickupWithServerErrorStaysPending() {
+        // given
+        when(restApi.putWithAuthRetry(eq("/pickup-commands/cmd-1"), any(), eq(Void.class)))
+                .thenThrow(new HttpClientException(500, "boom"));
+
+        // when
+        PickupOrder order = furgonetka().orderPickup(List.of("1"), WINDOW, "cmd-1");
+
+        // then
+        assertEquals(CommandStatus.PENDING, order.status());
+        assertEquals("cmd-1", order.commandId());
+    }
+
+    @Test
+    void orderPickupWithTimeoutStaysPending() {
+        // given
+        when(restApi.putWithAuthRetry(eq("/pickup-commands/cmd-1"), any(), eq(Void.class)))
+                .thenThrow(new RuntimeException("timeout"));
+
+        // when
+        PickupOrder order = furgonetka().orderPickup(List.of("1"), WINDOW, "cmd-1");
+
+        // then
+        assertEquals(CommandStatus.PENDING, order.status());
+        assertEquals("cmd-1", order.commandId());
+    }
+
+    @Test
     void checkOfASuccessfulPickupGivesItsId() throws Exception {
         // given
         when(restApi.fetchWithAuthRetry(eq("/pickup-commands/cmd-1"), anyMap(), eq(PickupCommandStatusResponse.class)))
