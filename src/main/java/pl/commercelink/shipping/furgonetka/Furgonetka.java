@@ -2,6 +2,7 @@ package pl.commercelink.shipping.furgonetka;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import pl.commercelink.rest.client.BinaryResponse;
 import pl.commercelink.rest.client.HttpClientException;
 import pl.commercelink.rest.client.RestApiWithRetry;
 import pl.commercelink.shipping.api.*;
@@ -16,6 +17,8 @@ class Furgonetka implements ShippingProvider {
 
     private static final String TRACKING_COMMAND_PATH = "/add-package-to-tracking-command/";
     private static final String CANCEL_COMMAND_PATH = "/cancel-command/";
+    private static final String ORDER_COMMAND_PATH = "/order-commands/";
+    private static final String LABEL_ACCEPT = "application/pdf, text/plain";
 
     private final RestApiWithRetry restApi;
 
@@ -134,36 +137,104 @@ class Furgonetka implements ShippingProvider {
     }
 
     @Override
-    public ShipmentResult createShipment(ShipmentRequest request) {
+    public ShipmentCreation createShipment(ShipmentRequest request, String commandId) {
+        Package created;
         try {
-            Package aPackage = toPackage(request);
-            Package created = restApi.postWithAuthRetry("/packages", aPackage, Package.class);
-            OrderPackageResponse orderResponse = orderPackage(created.getPackageId(), true);
-
-            try {
-                Thread.sleep(5000L);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw new ShippingException("Interrupted while waiting for order processing");
-            }
-
-            CheckOrderPackageStatusResponse status = checkOrderPackageStatus(orderResponse.getUuid());
-            if ("successful".equals(status.getStatus())) {
-                orderPickup(created.getPackageId());
-            }
-
-            Package details = getPackageDetails(created.getPackageId());
-            List<ShipmentResult.ShipmentParcelResult> parcels = details.getParcels().stream()
-                    .map(p -> new ShipmentResult.ShipmentParcelResult(p.getPackageNo(), p.getService(), p.getTrackingUrl()))
-                    .collect(Collectors.toList());
-
-            String managementUrl = parcels.isEmpty() ? null
-                    : "https://furgonetka.pl/konto/zamowione/" + parcels.get(0).trackingNo();
-
-            return new ShipmentResult(created.getPackageId(), parcels, managementUrl);
+            created = restApi.postWithAuthRetry("/packages", toPackage(request), Package.class);
         } catch (RuntimeException ex) {
             throw handleHttpException(ex);
         }
+        String packageId = Objects.requireNonNull(created).getPackageId();
+        try {
+            // the caller's id is the command's uuid, so a repeated PUT with the same id cannot order twice
+            restApi.putWithAuthRetry(ORDER_COMMAND_PATH + commandId, orderCommand(packageId), Void.class);
+        } catch (HttpClientException ex) {
+            if (ex.getStatusCode() >= 400 && ex.getStatusCode() < 500) {
+                throw handleHttpException(ex);
+            }
+            log.warn("Order command {} for package {} has an unknown outcome: {}", commandId, packageId, ex.getMessage());
+        } catch (RuntimeException ex) {
+            // no answer: the command may have reached Furgonetka; checkShipmentCreation finds out
+            log.warn("Order command {} for package {} has an unknown outcome: {}", commandId, packageId, ex.getMessage());
+        }
+        return ShipmentCreation.pending(commandId, packageId);
+    }
+
+    private static OrderPackageRequest orderCommand(String packageId) {
+        OrderPackageRequest.Label label = new OrderPackageRequest.Label();
+        label.setPageFormat("a4");
+        label.setFileFormat("pdf");
+        OrderPackageRequest request = new OrderPackageRequest();
+        request.setLabel(label);
+        request.setPackages(Collections.singletonList(new PackageId(packageId)));
+        request.setOnlyOrderPickup(false);
+        request.setSkipEmailSend(true);
+        return request;
+    }
+
+    @Override
+    public ShipmentCreation checkShipmentCreation(String commandId, String externalId) {
+        OrderCommandStatusResponse status;
+        try {
+            status = restApi.fetchWithAuthRetry(ORDER_COMMAND_PATH + commandId, new HashMap<>(), OrderCommandStatusResponse.class);
+        } catch (HttpClientException ex) {
+            if (isCommandNotExists(ex)) {
+                return ShipmentCreation.failed(commandId, externalId, "Furgonetka did not receive the order command");
+            }
+            throw handleHttpException(ex);
+        } catch (RuntimeException ex) {
+            throw handleHttpException(ex);
+        }
+        Objects.requireNonNull(status);
+        return switch (String.valueOf(status.getStatus())) {
+            case "successful", "partial_success" -> created(commandId, externalId, status);
+            case "error" -> ShipmentCreation.failed(commandId, externalId, joinedErrors(status.getErrors(),
+                    "Furgonetka did not order package " + externalId));
+            default -> ShipmentCreation.pending(commandId, externalId);
+        };
+    }
+
+    private ShipmentCreation created(String commandId, String externalId, OrderCommandStatusResponse status) {
+        String packageId = externalId != null ? externalId
+                : status.getSuccessfullyOrderedPackages().stream().findFirst().orElse(null);
+        if (packageId == null || (externalId != null && !status.getSuccessfullyOrderedPackages().isEmpty()
+                && !status.getSuccessfullyOrderedPackages().contains(externalId))) {
+            return ShipmentCreation.failed(commandId, externalId, joinedErrors(status.getErrors(),
+                    "Furgonetka did not order the package"));
+        }
+        Package details = getPackageDetails(packageId);
+        boolean pickupRequired = details.isPickupAvailable();
+        List<ShipmentResult.ShipmentParcelResult> parcels = details.getParcels().stream()
+                .map(p -> new ShipmentResult.ShipmentParcelResult(p.getPackageNo(), p.getService(), p.getTrackingUrl(),
+                        pickupRequired))
+                .toList();
+        String managementUrl = parcels.isEmpty() ? null
+                : "https://furgonetka.pl/konto/zamowione/" + parcels.get(0).trackingNo();
+        return ShipmentCreation.succeeded(commandId, new ShipmentResult(packageId, parcels, managementUrl));
+    }
+
+    private static String joinedErrors(List<Error> errors, String fallback) {
+        String joined = errors.stream().map(Error::getMessage).filter(Objects::nonNull)
+                .collect(Collectors.joining("; "));
+        return joined.isEmpty() ? fallback : joined;
+    }
+
+    @Override
+    public boolean supportsLabels() {
+        return true;
+    }
+
+    @Override
+    public Label getLabel(String externalId) {
+        BinaryResponse response;
+        try {
+            response = restApi.fetchBytesWithAuthRetry("/packages/" + externalId + "/label", new HashMap<>(), LABEL_ACCEPT);
+        } catch (RuntimeException ex) {
+            throw handleHttpException(ex);
+        }
+        String contentType = response.contentType() == null ? "application/pdf" : response.contentType();
+        String extension = contentType.startsWith("application/pdf") ? ".pdf" : ".zpl";
+        return new Label(response.content(), contentType, "etykieta-" + externalId + extension);
     }
 
     @Override
@@ -241,35 +312,6 @@ class Furgonetka implements ShippingProvider {
         return joined.isEmpty() ? "Furgonetka did not cancel package " + externalId : joined;
     }
 
-    OrderPackageResponse orderPackage(String packageId, boolean skipEmail) {
-        try {
-            String uuid = UUID.randomUUID().toString();
-
-            OrderPackageRequest.Label label = new OrderPackageRequest.Label();
-            label.setPageFormat("a4");
-            label.setFileFormat("pdf");
-
-            OrderPackageRequest request = new OrderPackageRequest();
-            request.setLabel(label);
-            request.setPackages(Collections.singletonList(new PackageId(packageId)));
-            request.setOnlyOrderPickup(false);
-            request.setSkipEmailSend(skipEmail);
-
-            return restApi.putWithAuthRetry("/order-commands/" + uuid, request, OrderPackageResponse.class);
-        } catch (RuntimeException ex) {
-            throw handleHttpException(ex);
-        }
-    }
-
-    CheckOrderPackageStatusResponse checkOrderPackageStatus(String uuid) {
-        try {
-            return restApi.fetchWithAuthRetry(
-                    "/order-commands/" + uuid, new HashMap<>(), CheckOrderPackageStatusResponse.class);
-        } catch (RuntimeException ex) {
-            throw handleHttpException(ex);
-        }
-    }
-
     @Override
     public List<TrackingEvent> getTrackingEvents(String externalId) {
         try {
@@ -281,10 +323,6 @@ class Furgonetka implements ShippingProvider {
         } catch (RuntimeException ex) {
             throw handleHttpException(ex);
         }
-    }
-
-    OrderPickupResponse orderPickup(String packageId) {
-        return orderPickup(Collections.singletonList(packageId));
     }
 
     OrderPickupResponse orderPickup(List<String> packageIds) {

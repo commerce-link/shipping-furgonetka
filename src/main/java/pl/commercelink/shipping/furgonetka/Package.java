@@ -22,6 +22,12 @@ class Package {
     private String type;
     @JsonProperty("additional_services")
     private AdditionalServices additionalServices;
+    @JsonProperty("pickup_available")
+    private Boolean pickupAvailable;
+
+    boolean isPickupAvailable() {
+        return Boolean.TRUE.equals(pickupAvailable);
+    }
 
     String getPackageId() {
         return packageId;
