@@ -77,7 +77,7 @@ class FurgonetkaCreationTest {
     void createShipmentWhosePackageGotAServerErrorIsRefusedWithoutTheHttpCause() {
         // given: nothing is ordered before the order command, so the caller may safely retry
         when(restApi.postWithAuthRetry(eq("/packages"), any(), eq(Package.class)))
-                .thenThrow(new HttpClientException(503, "Service Unavailable"));
+                .thenThrow(new HttpClientException(503, "{\"errors\":[{\"message\":\"upstream timeout\"}]}"));
 
         // when
         ShippingException e = assertThrows(ShippingException.class, () -> furgonetka().createShipment(request(), "cmd-1"));
@@ -85,7 +85,7 @@ class FurgonetkaCreationTest {
         // then: no HTTP 5xx in the cause chain, so the caller reads it as a refusal, not an unknown outcome
         assertNull(e.getCause());
         assertTrue(e.getMessage().startsWith("Furgonetka could not create the package"));
-        assertTrue(e.getMessage().contains("503"));
+        assertEquals("Furgonetka could not create the package: HTTP 503", e.getMessage());
         verify(restApi, never()).putWithAuthRetry(startsWith("/order-commands/"), any(), any());
     }
 

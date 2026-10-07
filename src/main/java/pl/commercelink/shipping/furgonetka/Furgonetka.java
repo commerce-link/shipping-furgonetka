@@ -171,7 +171,9 @@ class Furgonetka implements ShippingProvider {
             return new ShippingException(ex.getMessage(), ex);
         }
         log.warn("Furgonetka could not create the package", ex);
-        return new ShippingException("Furgonetka could not create the package: " + ex.getMessage());
+        // the status only: the body (an HTML error page or raw JSON) stays in the log above, not in what is shown
+        String reason = ex instanceof HttpClientException http ? "HTTP " + http.getStatusCode() : ex.getMessage();
+        return new ShippingException("Furgonetka could not create the package: " + reason);
     }
 
     /**
@@ -266,6 +268,10 @@ class Furgonetka implements ShippingProvider {
             response = restApi.fetchBytesWithAuthRetry("/packages/" + externalId + "/label", new HashMap<>(), LABEL_ACCEPT);
         } catch (RuntimeException ex) {
             throw handleHttpException(ex);
+        }
+        // Furgonetka answers 204 with no body while a package has no label yet (seen for customer-return packages)
+        if (response == null || response.content() == null || response.content().length == 0) {
+            throw new ShippingException("Furgonetka has no label for package " + externalId + " (yet)");
         }
         String contentType = response.contentType() == null ? "application/pdf" : response.contentType();
         String extension = contentType.startsWith("application/pdf") ? ".pdf" : ".zpl";

@@ -7,6 +7,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import pl.commercelink.rest.client.BinaryResponse;
 import pl.commercelink.rest.client.RestApiWithRetry;
 import pl.commercelink.shipping.api.Label;
+import pl.commercelink.shipping.api.ShippingException;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.anyMap;
@@ -47,5 +48,29 @@ class FurgonetkaLabelTest {
         // then
         assertEquals("etykieta-21480003.zpl", label.fileName());
         assertTrue(new Furgonetka(restApi).supportsLabels());
+    }
+
+    @Test
+    void labelWithoutContentIsRefusedInsteadOfReturningAnEmptyFile() {
+        // given: the sandbox answers 204 with no body for a customer-return package whose label is not ready
+        when(restApi.fetchBytesWithAuthRetry(eq("/packages/21480003/label"), anyMap(), eq("application/pdf, text/plain")))
+                .thenReturn(new BinaryResponse(new byte[0], null));
+
+        // when
+        ShippingException e = assertThrows(ShippingException.class, () -> new Furgonetka(restApi).getLabel("21480003"));
+
+        // then
+        assertTrue(e.getMessage().contains("21480003"));
+        assertNull(e.getCause());
+    }
+
+    @Test
+    void labelWithoutAnyBodyIsRefused() {
+        // given
+        when(restApi.fetchBytesWithAuthRetry(eq("/packages/21480003/label"), anyMap(), eq("application/pdf, text/plain")))
+                .thenReturn(new BinaryResponse(null, null));
+
+        // when / then
+        assertThrows(ShippingException.class, () -> new Furgonetka(restApi).getLabel("21480003"));
     }
 }
