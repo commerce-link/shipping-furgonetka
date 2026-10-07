@@ -33,7 +33,7 @@ class Package {
     }
 
     String getPickupNumber() {
-        return pickupNumber == null || pickupNumber.isBlank() ? null : pickupNumber;
+        return pickupNumber;
     }
 
     String getPackageId() {

@@ -148,22 +148,49 @@ class Furgonetka implements ShippingProvider {
         try {
             created = restApi.postWithAuthRetry("/packages", toPackage(request), Package.class);
         } catch (RuntimeException ex) {
-            throw handleHttpException(ex);
+            throw packageNotCreated(ex);
         }
-        String packageId = Objects.requireNonNull(created).getPackageId();
+        if (created == null || created.getPackageId() == null) {
+            throw new ShippingException("Furgonetka could not create the package: no package id in its answer");
+        }
+        String packageId = created.getPackageId();
+        // the caller's id is the command's uuid, so a repeated PUT with the same id cannot order twice
+        sendCommand(ORDER_COMMAND_PATH + commandId, orderCommand(packageId),
+                "Order command " + commandId + " for package " + packageId);
+        return ShipmentCreation.pending(commandId, packageId);
+    }
+
+    /**
+     * Nothing is ordered or paid before the order command, so a failed package POST is a refusal the caller may retry
+     * (an unordered package left in the Furgonetka basket costs nothing). A 4xx keeps its HTTP cause for Furgonetka's
+     * messages; a 5xx, a timeout or an unreadable answer is reported without it, so it is not read as an unknown
+     * outcome.
+     */
+    private static ShippingException packageNotCreated(RuntimeException ex) {
+        if (ex instanceof HttpClientException http && isClientError(http)) {
+            return new ShippingException(ex.getMessage(), ex);
+        }
+        log.warn("Furgonetka could not create the package", ex);
+        return new ShippingException("Furgonetka could not create the package: " + ex.getMessage());
+    }
+
+    /**
+     * Sends a command whose result is read with its check: a 4xx is a refusal; any other failure (5xx, no answer) may
+     * come after Furgonetka saved the command, so the outcome is left to the check.
+     */
+    private void sendCommand(String path, Object body, String command) {
         try {
-            // the caller's id is the command's uuid, so a repeated PUT with the same id cannot order twice
-            restApi.putWithAuthRetry(ORDER_COMMAND_PATH + commandId, orderCommand(packageId), Void.class);
-        } catch (HttpClientException ex) {
-            if (ex.getStatusCode() >= 400 && ex.getStatusCode() < 500) {
+            restApi.putWithAuthRetry(path, body, Void.class);
+        } catch (RuntimeException ex) {
+            if (ex instanceof HttpClientException http && isClientError(http)) {
                 throw handleHttpException(ex);
             }
-            log.warn("Order command {} for package {} has an unknown outcome: {}", commandId, packageId, ex.getMessage());
-        } catch (RuntimeException ex) {
-            // no answer: the command may have reached Furgonetka; checkShipmentCreation finds out
-            log.warn("Order command {} for package {} has an unknown outcome: {}", commandId, packageId, ex.getMessage());
+            log.warn("{} has an unknown outcome: {}", command, ex.getMessage());
         }
-        return ShipmentCreation.pending(commandId, packageId);
+    }
+
+    private static boolean isClientError(HttpClientException ex) {
+        return ex.getStatusCode() >= 400 && ex.getStatusCode() < 500;
     }
 
     private static OrderPackageRequest orderCommand(String packageId) {
@@ -204,25 +231,21 @@ class Furgonetka implements ShippingProvider {
     }
 
     private ShipmentCreation created(String commandId, String externalId, OrderCommandStatusResponse status) {
-        String packageId = externalId != null ? externalId
-                : status.getSuccessfullyOrderedPackages().stream().findFirst().orElse(null);
-        if (packageId == null || (externalId != null && !status.getSuccessfullyOrderedPackages().isEmpty()
-                && !status.getSuccessfullyOrderedPackages().contains(externalId))) {
+        List<String> ordered = status.getSuccessfullyOrderedPackages();
+        if (!ordered.isEmpty() && !ordered.contains(externalId)) {
             return ShipmentCreation.failed(commandId, externalId, joinedErrors(status.getErrors(),
                     "Furgonetka did not order the package"));
         }
-        Package details = getPackageDetails(packageId);
+        Package details = getPackageDetails(externalId);
         // Furgonetka books the courier itself for some packages (e.g. a return collected from a customer): it then
-        // reports pickup_available=false with a pickup_number, and no pickup is left to order.
-        String pickupNumber = details.getPickupNumber();
-        boolean pickupRequired = details.isPickupAvailable() && pickupNumber == null;
+        // reports a pickup_number, and ShipmentParcelResult leaves no pickup to order.
         List<ShipmentResult.ShipmentParcelResult> parcels = details.getParcels().stream()
                 .map(p -> new ShipmentResult.ShipmentParcelResult(p.getPackageNo(), p.getService(), p.getTrackingUrl(),
-                        pickupRequired, pickupNumber))
+                        details.isPickupAvailable(), details.getPickupNumber()))
                 .toList();
         String managementUrl = parcels.isEmpty() ? null
                 : "https://furgonetka.pl/konto/zamowione/" + parcels.get(0).trackingNo();
-        return ShipmentCreation.succeeded(commandId, new ShipmentResult(packageId, parcels, managementUrl));
+        return ShipmentCreation.succeeded(commandId, new ShipmentResult(externalId, parcels, managementUrl));
     }
 
     private static String joinedErrors(List<Error> errors, String fallback) {
@@ -376,18 +399,8 @@ class Furgonetka implements ShippingProvider {
     public PickupOrder orderPickup(List<String> externalIds, PickupWindow window, String commandId) {
         PickupCommandRequest body = new PickupCommandRequest(packageIds(externalIds), new PickupCommandRequest.PickupDate(
                 window.date().toString(), window.from().format(HOUR), window.to().format(HOUR), window.token()));
-        try {
-            restApi.putWithAuthRetry(PICKUP_COMMAND_PATH + commandId, body, Void.class);
-        } catch (HttpClientException ex) {
-            if (ex.getStatusCode() >= 400 && ex.getStatusCode() < 500) {
-                throw handleHttpException(ex);
-            }
-            log.warn("Pickup command {} has an unknown outcome: {}", commandId, ex.getMessage());
-        } catch (RuntimeException ex) {
-            // no answer: the command may have reached Furgonetka; checkPickupOrder finds out
-            log.warn("Pickup command {} has an unknown outcome: {}", commandId, ex.getMessage());
-        }
-        return PickupOrder.pending(commandId, externalIds, window);
+        sendCommand(PICKUP_COMMAND_PATH + commandId, body, "Pickup command " + commandId);
+        return PickupOrder.pending(commandId);
     }
 
     @Override
@@ -399,7 +412,7 @@ class Furgonetka implements ShippingProvider {
             if (isCommandNotExists(ex)) {
                 // as for the order command: an unanswered pickup command may still be saved, so it is not failed yet
                 log.warn("Pickup command {} is not known to Furgonetka yet; still pending", commandId);
-                return PickupOrder.pending(commandId, List.of(), null);
+                return PickupOrder.pending(commandId);
             }
             throw handleHttpException(ex);
         } catch (RuntimeException ex) {
@@ -408,14 +421,13 @@ class Furgonetka implements ShippingProvider {
         Objects.requireNonNull(status);
         return switch (String.valueOf(status.getStatus())) {
             case "successful", "partial_success" -> status.getDetails().isEmpty()
-                    ? PickupOrder.failed(commandId, List.of(),
+                    ? PickupOrder.failed(commandId,
                             joinedErrors(status.getErrors(), "Furgonetka did not order the pickup"))
                     // one detail per pickup Furgonetka booked: a package listed in none of them was not picked up
-                    : PickupOrder.succeeded(commandId, status.getDetails().get(0).getPickupId(), null,
+                    : PickupOrder.succeeded(commandId, status.getDetails().get(0).getPickupId(),
                             status.getDetails().stream().flatMap(d -> d.getPackageIds().stream()).distinct().toList());
-            case "error" -> PickupOrder.failed(commandId, List.of(),
-                    joinedErrors(status.getErrors(), "Furgonetka did not order the pickup"));
-            default -> PickupOrder.pending(commandId, List.of(), null);
+            case "error" -> PickupOrder.failed(commandId, joinedErrors(status.getErrors(), "Furgonetka did not order the pickup"));
+            default -> PickupOrder.pending(commandId);
         };
     }
 

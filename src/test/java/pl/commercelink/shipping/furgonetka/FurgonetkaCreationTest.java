@@ -74,6 +74,66 @@ class FurgonetkaCreationTest {
     }
 
     @Test
+    void createShipmentWhosePackageGotAServerErrorIsRefusedWithoutTheHttpCause() {
+        // given: nothing is ordered before the order command, so the caller may safely retry
+        when(restApi.postWithAuthRetry(eq("/packages"), any(), eq(Package.class)))
+                .thenThrow(new HttpClientException(503, "Service Unavailable"));
+
+        // when
+        ShippingException e = assertThrows(ShippingException.class, () -> furgonetka().createShipment(request(), "cmd-1"));
+
+        // then: no HTTP 5xx in the cause chain, so the caller reads it as a refusal, not an unknown outcome
+        assertNull(e.getCause());
+        assertTrue(e.getMessage().startsWith("Furgonetka could not create the package"));
+        assertTrue(e.getMessage().contains("503"));
+        verify(restApi, never()).putWithAuthRetry(startsWith("/order-commands/"), any(), any());
+    }
+
+    @Test
+    void createShipmentWhosePackageGotNoAnswerIsRefused() {
+        // given
+        when(restApi.postWithAuthRetry(eq("/packages"), any(), eq(Package.class)))
+                .thenThrow(new RuntimeException("HTTP request failed"));
+
+        // when
+        ShippingException e = assertThrows(ShippingException.class, () -> furgonetka().createShipment(request(), "cmd-1"));
+
+        // then
+        assertNull(e.getCause());
+        assertTrue(e.getMessage().contains("HTTP request failed"));
+        verify(restApi, never()).putWithAuthRetry(startsWith("/order-commands/"), any(), any());
+    }
+
+    @Test
+    void createShipmentWithoutACreatedPackageIsRefused() {
+        // given
+        when(restApi.postWithAuthRetry(eq("/packages"), any(), eq(Package.class))).thenReturn(null);
+
+        // when
+        ShippingException e = assertThrows(ShippingException.class, () -> furgonetka().createShipment(request(), "cmd-1"));
+
+        // then
+        assertNull(e.getCause());
+        verify(restApi, never()).putWithAuthRetry(startsWith("/order-commands/"), any(), any());
+    }
+
+    @Test
+    void createShipmentWhoseOrderCommandGotAServerErrorIsPendingWithTheKnownPackage() throws Exception {
+        // given: the order command may have been saved before the 5xx, so the outcome is unknown
+        when(restApi.postWithAuthRetry(eq("/packages"), any(), eq(Package.class)))
+                .thenReturn(json("{\"package_id\":\"21480003\"}", Package.class));
+        when(restApi.putWithAuthRetry(eq("/order-commands/cmd-1"), any(), eq(Void.class)))
+                .thenThrow(new HttpClientException(502, "Bad Gateway"));
+
+        // when
+        ShipmentCreation result = furgonetka().createShipment(request(), "cmd-1");
+
+        // then
+        assertEquals(CommandStatus.PENDING, result.status());
+        assertEquals("21480003", result.externalId());
+    }
+
+    @Test
     void createShipmentWhoseOrderCommandGotNoAnswerIsPendingWithTheKnownPackage() throws Exception {
         // given: the package exists, the order command call timed out (it may or may not have reached Furgonetka)
         when(restApi.postWithAuthRetry(eq("/packages"), any(), eq(Package.class)))
@@ -161,24 +221,6 @@ class FurgonetkaCreationTest {
 
         // then
         assertFalse(sent.has("pickup_number"));
-    }
-
-    @Test
-    void checkWithoutExternalIdReadsOrderedPackageFromCommand() throws Exception {
-        // given
-        when(restApi.fetchWithAuthRetry(eq("/order-commands/cmd-1"), anyMap(), eq(OrderCommandStatusResponse.class)))
-                .thenReturn(json("{\"status\":\"successful\",\"successfully_ordered_packages\":[21480003]}",
-                        OrderCommandStatusResponse.class));
-        when(restApi.fetchWithAuthRetry(eq("/packages/21480003"), anyMap(), eq(Package.class)))
-                .thenReturn(json("{\"package_id\":\"21480003\",\"pickup_available\":false,\"parcels\":[{\"package_no\":\"X1\"}]}",
-                        Package.class));
-
-        // when
-        ShipmentCreation result = furgonetka().checkShipmentCreation("cmd-1", null);
-
-        // then
-        assertEquals("21480003", result.externalId());
-        assertFalse(result.result().parcels().get(0).pickupRequired());
     }
 
     @Test
