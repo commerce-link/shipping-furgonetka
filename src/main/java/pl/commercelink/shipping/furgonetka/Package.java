@@ -22,6 +22,19 @@ class Package {
     private String type;
     @JsonProperty("additional_services")
     private AdditionalServices additionalServices;
+    @JsonProperty("pickup_available")
+    private Boolean pickupAvailable;
+    // read-only: Furgonetka assigns it, the package POST body must not carry it
+    @JsonProperty(value = "pickup_number", access = JsonProperty.Access.WRITE_ONLY)
+    private String pickupNumber;
+
+    boolean isPickupAvailable() {
+        return Boolean.TRUE.equals(pickupAvailable);
+    }
+
+    String getPickupNumber() {
+        return pickupNumber;
+    }
 
     String getPackageId() {
         return packageId;
