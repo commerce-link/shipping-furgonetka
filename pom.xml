@@ -5,7 +5,7 @@
 
     <groupId>pl.commercelink</groupId>
     <artifactId>shipping-furgonetka</artifactId>
-    <version>0.5.0</version>
+    <version>0.5.1</version>
     <packaging>jar</packaging>
 
     <name>shipping-furgonetka</name>
